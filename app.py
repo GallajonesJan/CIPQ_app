@@ -218,7 +218,11 @@ def suggest_severity():
     if not snippet:
         return jsonify({"error": "No snippet provided."}), 400
 
-    system_prompt = (
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY environment variable is not set."}), 500
+
+    prompt = (
         "You are an expert qualitative policy researcher specializing in the Philippine book "
         "publishing industry. You apply the CIPQ (Creative Industry Policy Quadrant) severity "
         "scoring rubric strictly and consistently.\n\n"
@@ -232,45 +236,32 @@ def suggest_severity():
         "- Operational impact: Does it describe direct disruptions (delays, cost spikes, shutdowns)?\n"
         "- Breadth: Does it affect many stakeholders or a wide geographic area?\n"
         "- Systemic consequences: Long-term, sector-wide or institutional problems signal higher severity.\n"
-        "- Urgency / intensity: Strong language ('impossible', 'critical', 'collapsed') signals higher severity.\n\n"
-        "Respond ONLY with a valid JSON object. No markdown, no extra text:\n"
-        '{"score": <integer 1-5>, "rationale": "<one concise sentence>", "key_factors": ["<factor 1>", "<factor 2>", "<factor 3>"]}'
-    )
-
-    user_prompt = (
-        f'Score the severity of this narrative segment from a Philippine book publishing stakeholder:\n\n'
+        "- Urgency / intensity: Strong language signals higher severity.\n\n"
+        "Score the severity of this narrative segment from a Philippine book publishing stakeholder:\n\n"
         f'SNIPPET: "{snippet}"\n'
         f'CIPQ DOMAIN: {domain}\n'
         f'INDICATOR: {indicator_name}\n\n'
-        f'Apply the rubric and return JSON only.'
+        "Respond ONLY with a valid JSON object, no markdown, no extra text:\n"
+        '{"score": <integer 1-5>, "rationale": "<one concise sentence>", "key_factors": ["<factor 1>", "<factor 2>", "<factor 3>"]}'
     )
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return jsonify({"error": "ANTHROPIC_API_KEY environment variable is not set."}), 500
-
     try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
         payload = json.dumps({
-            "model": "claude-sonnet-4-20250514",
-            "max_tokens": 300,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": user_prompt}]
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": 300, "temperature": 0.2}
         }).encode("utf-8")
 
         req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-            },
+            url, data=payload,
+            headers={"Content-Type": "application/json"},
             method="POST"
         )
         with urllib.request.urlopen(req, timeout=20) as resp:
             result = json.loads(resp.read().decode("utf-8"))
 
-        text = result["content"][0]["text"].strip()
+        text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        # Strip markdown fences if present
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
@@ -280,6 +271,6 @@ def suggest_severity():
 
     except urllib.error.HTTPError as e:
         body = e.read().decode()
-        return jsonify({"error": f"Anthropic API error {e.code}: {body}"}), 502
+        return jsonify({"error": f"Gemini API error {e.code}: {body}"}), 502
     except Exception as e:
         return jsonify({"error": str(e)}), 500
